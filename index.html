@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Organizador de mesas - Pista 33.2 × 16 m</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Segoe UI", Arial, sans-serif;
+    background: #2b2b2b;
+    color: #eee;
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+  }
+  #canvas-wrap {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+  canvas { background: #3a3a3a; box-shadow: 0 0 20px rgba(0,0,0,.5); }
+  #panel {
+    width: 265px;
+    background: #1e1e1e;
+    padding: 16px;
+    overflow-y: auto;
+    border-left: 1px solid #444;
+  }
+  #panel h1 { font-size: 16px; margin-bottom: 4px; }
+  #panel h2 { font-size: 13px; margin: 16px 0 6px; color: #aaa; text-transform: uppercase; letter-spacing: .5px; }
+  #panel button {
+    display: block;
+    width: 100%;
+    margin: 4px 0;
+    padding: 8px;
+    background: #3a6ea5;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  #panel button:hover { background: #4a7eb5; }
+  #panel button.peligro { background: #a53a3a; }
+  #panel button.peligro:hover { background: #b54a4a; }
+  #panel button.secundario { background: #555; }
+  #panel button.secundario:hover { background: #666; }
+  #panel label { display: block; font-size: 12px; margin: 8px 0 2px; }
+  #panel input[type="range"] { width: 100%; }
+  #panel .valor { font-size: 12px; color: #8cf; }
+  #stats { font-size: 13px; line-height: 1.7; margin-top: 8px; }
+  #stats .conflicto { color: #ff7070; font-weight: bold; }
+  #stats .ok { color: #7f7; }
+  .ayuda { font-size: 11px; color: #888; margin-top: 14px; line-height: 1.6; }
+  #panel input[type="checkbox"] { vertical-align: middle; }
+  #panel label.inline { display: inline; margin-left: 4px; font-size: 12px; }
+  #orientacion { font-size: 12px; color: #8cf; margin-top: 4px; }
+</style>
+</head>
+<body>
+
+<div id="canvas-wrap">
+  <canvas id="lienzo"></canvas>
+</div>
+
+<div id="panel">
+  <h1>Organizador de mesas</h1>
+  <div style="font-size:12px;color:#999">Pista 33.2 × 16 m · Mesa 1.80 × 0.70 m</div>
+
+  <h2>Mesas</h2>
+  <button id="btn-add">+ Añadir mesa</button>
+  <button id="btn-rotar" class="secundario">Rotar (R)</button>
+  <button id="btn-borrar" class="peligro">Eliminar (Supr)</button>
+  <div id="orientacion"></div>
+
+  <h2>Zona de sillas</h2>
+  <label>Margen alrededor: <span class="valor" id="margen-val">0.75 m</span></label>
+  <input type="range" id="margen" min="0.4" max="1.2" step="0.05" value="0.75">
+
+  <h2>Cuadrícula</h2>
+  <input type="checkbox" id="snap" checked><label class="inline" for="snap">Ajustar a cuadrícula (0.1 m)</label>
+
+  <h2>Estado</h2>
+  <div id="stats"></div>
+
+  <h2>Guardar / Cargar</h2>
+  <button id="btn-guardar" class="secundario">Guardar (navegador)</button>
+  <button id="btn-cargar" class="secundario">Cargar (navegador)</button>
+  <button id="btn-exportar" class="secundario">Exportar JSON</button>
+  <button id="btn-importar" class="secundario">Importar JSON</button>
+  <input type="file" id="fichero" accept=".json" style="display:none">
+
+  <div class="ayuda">
+    <b>Controles:</b><br>
+    · Clic en hueco vacío: añadir mesa<br>
+    · Clic + arrastrar en vacío: pintar una fila de mesas;<br>
+    &nbsp;&nbsp;la orientación sigue la dirección del trazo<br>
+    &nbsp;&nbsp;(gira y formarás L y U automáticamente)<br>
+    · Arrastrar una mesa: moverla<br>
+    · Mesas pegadas se <b>fusionan</b> en una sola (imán al acercarlas)<br>
+    · R: rotar seleccionada (o la orientación de las nuevas)<br>
+    · Supr: eliminar seleccionada<br>
+    · Halo rojo = sillas demasiado pegadas<br>
+    · Halo naranja = fuera de la pista
+  </div>
+</div>
+
+<script>
+"use strict";
+
+// ---------- Constantes ----------
+const PISTA_W = 33.2;   // metros
+const PISTA_H = 16.0;
+const MESA_L = 1.80;    // largo de la mesa
+const MESA_A = 0.70;    // ancho de la mesa
+const ESCALA = 30;      // px por metro
+const MARGEN_LIENZO = 40;
+const TOL_FUSION = 0.12;  // hueco máximo (m) para considerar mesas "pegadas"
+const TOL_IMAN = 0.35;    // distancia de atracción del imán (m) en vivo
+const TOL_ASENTAR = 0.5;  // atracción (m) al soltar/añadir, para "cuadrar" sola
+
+// Medidas pista de tenis (dobles)
+const COURT_L = 23.77, COURT_W = 10.97, SINGLES_W = 8.23, SERVICIO = 6.40;
+
+// ---------- Estado ----------
+// Cada grupo es un rectángulo de mesas fusionadas: cols × rows mesas.
+// x, y = centro en metros. rot 0 = largo horizontal, 90 = vertical.
+let grupos = [];
+let margenSillas = 0.75;
+let snap = true;
+let siguienteId = 1;
+let rotNueva = 0;         // orientación de las mesas nuevas
+let seleccionada = null;
+let arrastrando = null;   // {grupo, dx, dy, movido}
+let pintando = null;      // {ultima, añadida}
+
+// ---------- Canvas ----------
+const canvas = document.getElementById("lienzo");
+const ctx = canvas.getContext("2d");
+const W = PISTA_W * ESCALA + MARGEN_LIENZO * 2;
+const H = PISTA_H * ESCALA + MARGEN_LIENZO * 2;
+canvas.width = W;
+canvas.height = H;
+
+function ajustarCanvas() {
+  const wrap = document.getElementById("canvas-wrap");
+  const esc = Math.min(1, (wrap.clientWidth - 20) / W, (wrap.clientHeight - 20) / H);
+  canvas.style.width = (W * esc) + "px";
+  canvas.style.height = (H * esc) + "px";
+}
+window.addEventListener("resize", ajustarCanvas);
+ajustarCanvas();
+
+function mToPxX(x) { return MARGEN_LIENZO + x * ESCALA; }
+function mToPxY(y) { return MARGEN_LIENZO + y * ESCALA; }
+function pxToM(e) {
+  const r = canvas.getBoundingClientRect();
+  const escX = W / r.width, escY = H / r.height;
+  return {
+    x: ((e.clientX - r.left) * escX - MARGEN_LIENZO) / ESCALA,
+    y: ((e.clientY - r.top) * escY - MARGEN_LIENZO) / ESCALA
+  };
+}
+
+// ---------- Geometría ----------
+function dimsGrupo(g) {
+  const w = g.cols * MESA_L, h = g.rows * MESA_A;
+  return g.rot === 0 ? { w, h } : { w: h, h: w };
+}
+function rectGrupo(g) {
+  const d = dimsGrupo(g);
+  return { x: g.x - d.w / 2, y: g.y - d.h / 2, w: d.w, h: d.h };
+}
+function haloGrupo(g) {
+  const r = rectGrupo(g);
+  return { x: r.x - margenSillas, y: r.y - margenSillas, w: r.w + margenSillas * 2, h: r.h + margenSillas * 2 };
+}
+function solapan(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+function calcularConflictos() {
+  const enConflicto = new Set();
+  const fuera = new Set();
+  const halos = grupos.map(g => ({ id: g.id, h: haloGrupo(g) }));
+  for (let i = 0; i < halos.length; i++) {
+    const a = halos[i].h;
+    if (a.x < 0 || a.y < 0 || a.x + a.w > PISTA_W || a.y + a.h > PISTA_H) fuera.add(halos[i].id);
+    for (let j = i + 1; j < halos.length; j++) {
+      if (solapan(a, halos[j].h)) { enConflicto.add(halos[i].id); enConflicto.add(halos[j].id); }
+    }
+  }
+  return { enConflicto, fuera };
+}
+
+// ---------- Fusión ----------
+// Dos grupos con la misma rotación se fusionan si su unión forma un rectángulo
+// relleno (área unión ≈ suma de áreas) y el hueco entre ellos es < TOL_FUSION.
+function intentarFusiones() {
+  let hubo = true;
+  while (hubo) {
+    hubo = false;
+    for (let i = 0; i < grupos.length && !hubo; i++) {
+      for (let j = i + 1; j < grupos.length && !hubo; j++) {
+        const a = grupos[i], b = grupos[j];
+        if (a.rot !== b.rot) continue;
+        const ra = rectGrupo(a), rb = rectGrupo(b);
+        // Se solapan de verdad → no fusionar (el usuario las ha apilado).
+        // Tolerancia de 2 cm para ignorar solapamientos de redondeo flotante.
+        const ox = Math.min(ra.x + ra.w, rb.x + rb.w) - Math.max(ra.x, rb.x);
+        const oy = Math.min(ra.y + ra.h, rb.y + rb.h) - Math.max(ra.y, rb.y);
+        if (ox > 0.02 && oy > 0.02) continue;
+        const ux = Math.min(ra.x, rb.x), uy = Math.min(ra.y, rb.y);
+        const uw = Math.max(ra.x + ra.w, rb.x + rb.w) - ux;
+        const uh = Math.max(ra.y + ra.h, rb.y + rb.h) - uy;
+        const areaUnion = uw * uh;
+        const areaSuma = ra.w * ra.h + rb.w * rb.h;
+        if (Math.abs(areaUnion - areaSuma) > 0.08) continue; // no forman rectángulo relleno
+        const gapX = Math.max(ra.x, rb.x) - Math.min(ra.x + ra.w, rb.x + rb.w);
+        const gapY = Math.max(ra.y, rb.y) - Math.min(ra.y + ra.h, rb.y + rb.h);
+        if (Math.max(gapX, gapY) > TOL_FUSION) continue;
+
+        // Fusionar: el grupo resultante usa las dimensiones exactas de celda.
+        // OJO: el tamaño de celda en cada eje de pantalla depende de la
+        // rotación (rot 90: el largo de la mesa va en vertical).
+        const celX = a.rot === 0 ? MESA_L : MESA_A;
+        const celY = a.rot === 0 ? MESA_A : MESA_L;
+        const nX = Math.max(1, Math.round(uw / celX));
+        const nY = Math.max(1, Math.round(uh / celY));
+        const nuevo = {
+          id: a.id,
+          x: ux + uw / 2,
+          y: uy + uh / 2,
+          rot: a.rot,
+          cols: a.rot === 0 ? nX : nY,
+          rows: a.rot === 0 ? nY : nX
+        };
+        // Recentrar y redondear para evitar deriva de punto flotante
+        nuevo.x = Math.round((ux + uw / 2) * 10000) / 10000;
+        nuevo.y = Math.round((uy + uh / 2) * 10000) / 10000;
+        grupos = grupos.filter(g => g !== a && g !== b);
+        grupos.push(nuevo);
+        if (seleccionada === a || seleccionada === b) seleccionada = nuevo;
+        hubo = true;
+      }
+    }
+  }
+}
+
+// ---------- Imán (snap a bordes de otros grupos) ----------
+// tol: distancia máxima de atracción. En vivo se usa TOL_IMAN y al soltar
+// una tolerancia mayor (TOL_ASENTAR) para que la mesa "se cuadre" sola.
+function snapMagnetico(g, x, y, tol = TOL_IMAN) {
+  const d = dimsGrupo(g);
+  let bx = snap ? Math.round(x * 10) / 10 : x;
+  let by = snap ? Math.round(y * 10) / 10 : y;
+  let mejorX = null, mejorY = null;
+  let dxMin = tol, dyMin = tol;
+  for (const o of grupos) {
+    if (o === g) continue;
+    const ro = rectGrupo(o);
+    // Pegada a un lado (peso 1) + alineación de bordes y centro (peso 0.6:
+    // se prefieren porque son las que "cuadran" la mesa con su vecina)
+    const candX = [
+      { c: ro.x - d.w / 2, p: 1 }, { c: ro.x + ro.w + d.w / 2, p: 1 },
+      { c: ro.x + d.w / 2, p: 0.6 }, { c: ro.x + ro.w - d.w / 2, p: 0.6 },
+      { c: o.x, p: 0.6 }
+    ];
+    const candY = [
+      { c: ro.y - d.h / 2, p: 1 }, { c: ro.y + ro.h + d.h / 2, p: 1 },
+      { c: ro.y + d.h / 2, p: 0.6 }, { c: ro.y + ro.h - d.h / 2, p: 0.6 },
+      { c: o.y, p: 0.6 }
+    ];
+    for (const { c, p } of candX) { const dd = Math.abs(c - bx) * p; if (dd < dxMin) { dxMin = dd; mejorX = c; } }
+    for (const { c, p } of candY) { const dd = Math.abs(c - by) * p; if (dd < dyMin) { dyMin = dd; mejorY = c; } }
+  }
+  return { x: mejorX !== null ? mejorX : bx, y: mejorY !== null ? mejorY : by };
+}
+
+// ---------- Dibujo de la pista ----------
+function dibujarPista() {
+  const px = MARGEN_LIENZO, py = MARGEN_LIENZO;
+
+  // Entorno (asfalto/cemento alrededor de la pista)
+  ctx.fillStyle = "#4a4a4a";
+  ctx.fillRect(0, 0, W, H);
+
+  // Superficie exterior de la pista (verde)
+  ctx.fillStyle = "#4e8a5f";
+  ctx.fillRect(px, py, PISTA_W * ESCALA, PISTA_H * ESCALA);
+
+  // Cuadrícula 0.5 m / 1 m (sutil)
+  for (let x = 0; x <= PISTA_W + 1e-9; x += 0.5) {
+    const metro = Math.abs(x - Math.round(x)) < 1e-9;
+    ctx.strokeStyle = metro ? "rgba(255,255,255,.13)" : "rgba(255,255,255,.05)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(mToPxX(x), mToPxY(0));
+    ctx.lineTo(mToPxX(x), mToPxY(PISTA_H));
+    ctx.stroke();
+  }
+  for (let y = 0; y <= PISTA_H + 1e-9; y += 0.5) {
+    const metro = Math.abs(y - Math.round(y)) < 1e-9;
+    ctx.strokeStyle = metro ? "rgba(255,255,255,.13)" : "rgba(255,255,255,.05)";
+    ctx.beginPath();
+    ctx.moveTo(mToPxX(0), mToPxY(y));
+    ctx.lineTo(mToPxX(PISTA_W), mToPxY(y));
+    ctx.stroke();
+  }
+
+  // ---- Pista de tenis (rojo tierra, como en la foto) ----
+  const cx0 = (PISTA_W - COURT_L) / 2;   // 4.715
+  const cy0 = (PISTA_H - COURT_W) / 2;   // 2.515
+  ctx.fillStyle = "#b35a4e";
+  ctx.fillRect(mToPxX(cx0), mToPxY(cy0), COURT_L * ESCALA, COURT_W * ESCALA);
+
+  // Líneas blancas
+  ctx.strokeStyle = "rgba(255,255,255,.9)";
+  ctx.lineWidth = 2;
+  const X = v => mToPxX(v), Y = v => mToPxY(v);
+  const linea = (x1, y1, x2, y2) => { ctx.beginPath(); ctx.moveTo(X(x1), Y(y1)); ctx.lineTo(X(x2), Y(y2)); ctx.stroke(); };
+
+  // Rectángulo de dobles (fondos y laterales)
+  ctx.strokeRect(X(cx0), Y(cy0), COURT_L * ESCALA, COURT_W * ESCALA);
+  // Laterales de individuales
+  const sOff = (COURT_W - SINGLES_W) / 2;
+  linea(cx0, cy0 + sOff, cx0 + COURT_L, cy0 + sOff);
+  linea(cx0, cy0 + COURT_W - sOff, cx0 + COURT_L, cy0 + COURT_W - sOff);
+  // Líneas de saque (a 6.40 m de la red)
+  const red = PISTA_W / 2;
+  linea(red - SERVICIO, cy0 + sOff, red - SERVICIO, cy0 + COURT_W - sOff);
+  linea(red + SERVICIO, cy0 + sOff, red + SERVICIO, cy0 + COURT_W - sOff);
+  // Línea central de saque
+  linea(red - SERVICIO, cy0 + COURT_W / 2, red + SERVICIO, cy0 + COURT_W / 2);
+  // Marcas centrales en los fondos
+  linea(cx0, cy0 + COURT_W / 2, cx0 + 0.15, cy0 + COURT_W / 2);
+  linea(cx0 + COURT_L - 0.15, cy0 + COURT_W / 2, cx0 + COURT_L, cy0 + COURT_W / 2);
+
+  // Borde de la pista
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(px, py, PISTA_W * ESCALA, PISTA_H * ESCALA);
+
+  // Reglas (cada 2 m)
+  ctx.fillStyle = "#bbb";
+  ctx.font = "10px sans-serif";
+  ctx.textAlign = "center";
+  for (let x = 0; x <= PISTA_W; x += 2) ctx.fillText(x, mToPxX(x), MARGEN_LIENZO - 6);
+  ctx.textAlign = "right";
+  for (let y = 0; y <= PISTA_H; y += 2) ctx.fillText(y, MARGEN_LIENZO - 6, mToPxY(y) + 3);
+
+  // Etiquetas de dimensiones
+  ctx.fillStyle = "#eee";
+  ctx.font = "bold 12px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("33.2 m", mToPxX(PISTA_W / 2), MARGEN_LIENZO - 20);
+  ctx.save();
+  ctx.translate(MARGEN_LIENZO - 26, mToPxY(PISTA_H / 2));
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText("16 m", 0, 0);
+  ctx.restore();
+}
+
+// ---------- Dibujo ----------
+function dibujar() {
+  ctx.clearRect(0, 0, W, H);
+  dibujarPista();
+
+  const { enConflicto, fuera } = calcularConflictos();
+
+  for (const g of grupos) {
+    const r = rectGrupo(g);
+    const h = haloGrupo(g);
+
+    // Halo de sillas
+    if (enConflicto.has(g.id)) ctx.fillStyle = "rgba(255,60,60,.35)";
+    else if (fuera.has(g.id)) ctx.fillStyle = "rgba(255,165,0,.30)";
+    else ctx.fillStyle = "rgba(255,255,255,.14)";
+    ctx.fillRect(mToPxX(h.x), mToPxY(h.y), h.w * ESCALA, h.h * ESCALA);
+    ctx.strokeStyle = enConflicto.has(g.id) ? "#ff5050" : (fuera.has(g.id) ? "#ffa500" : "rgba(255,255,255,.4)");
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 3]);
+    ctx.strokeRect(mToPxX(h.x), mToPxY(h.y), h.w * ESCALA, h.h * ESCALA);
+    ctx.setLineDash([]);
+
+    // Mesa (grupo)
+    ctx.fillStyle = g === seleccionada ? "#d9a441" : "#8b5a2b";
+    ctx.fillRect(mToPxX(r.x), mToPxY(r.y), r.w * ESCALA, r.h * ESCALA);
+    ctx.strokeStyle = g === seleccionada ? "#ffd97a" : "#5d3a17";
+    ctx.lineWidth = g === seleccionada ? 2.5 : 1.5;
+    ctx.strokeRect(mToPxX(r.x), mToPxY(r.y), r.w * ESCALA, r.h * ESCALA);
+
+    // Divisiones entre mesas individuales
+    ctx.strokeStyle = "rgba(0,0,0,.35)";
+    ctx.lineWidth = 1;
+    const celdaW = (g.rot === 0 ? MESA_L : MESA_A) * ESCALA;
+    const celdaH = (g.rot === 0 ? MESA_A : MESA_L) * ESCALA;
+    const nX = g.rot === 0 ? g.cols : g.rows;
+    const nY = g.rot === 0 ? g.rows : g.cols;
+    for (let i = 1; i < nX; i++) {
+      ctx.beginPath();
+      ctx.moveTo(mToPxX(r.x) + i * celdaW, mToPxY(r.y));
+      ctx.lineTo(mToPxX(r.x) + i * celdaW, mToPxY(r.y) + r.h * ESCALA);
+      ctx.stroke();
+    }
+    for (let i = 1; i < nY; i++) {
+      ctx.beginPath();
+      ctx.moveTo(mToPxX(r.x), mToPxY(r.y) + i * celdaH);
+      ctx.lineTo(mToPxX(r.x) + r.w * ESCALA, mToPxY(r.y) + i * celdaH);
+      ctx.stroke();
+    }
+
+    // Comensales: 3 por lado largo de cada mesa (círculos a 0.30 m del borde)
+    ctx.fillStyle = "#f5f0e6";
+    ctx.strokeStyle = "rgba(0,0,0,.45)";
+    ctx.lineWidth = 1;
+    const radio = 0.17 * ESCALA;
+    for (let c = 0; c < g.cols; c++) {
+      for (const k of [0.3, 0.9, 1.5]) {
+        for (const s of [-1, 1]) {
+          let sx, sy;
+          if (g.rot === 0) {
+            sx = mToPxX(r.x + c * MESA_L + k);
+            sy = mToPxY(g.y + s * (r.h / 2 + 0.30));
+          } else {
+            sx = mToPxX(g.x + s * (r.w / 2 + 0.30));
+            sy = mToPxY(r.y + c * MESA_L + k);
+          }
+          ctx.beginPath();
+          ctx.arc(sx, sy, radio, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        }
+      }
+    }
+
+    // Etiqueta
+    const nMesas = g.cols * g.rows;
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 11px sans-serif";
+    ctx.textAlign = "center";
+    const txt = nMesas > 1 ? `${g.id} (${nMesas})` : `${g.id}`;
+    ctx.fillText(txt, mToPxX(g.x), mToPxY(g.y) + 4);
+  }
+
+  actualizarStats(enConflicto, fuera);
+}
+
+function comensalesGrupo(g) {
+  // 3 comensales por cada lado largo expuesto (6 por mesa a lo largo del grupo)
+  return 6 * g.cols;
+}
+
+function actualizarStats(enConflicto, fuera) {
+  const stats = document.getElementById("stats");
+  const nGrupos = grupos.length;
+  const nMesas = grupos.reduce((s, g) => s + g.cols * g.rows, 0);
+  const nComensales = grupos.reduce((s, g) => s + comensalesGrupo(g), 0);
+  let html = `Grupos: <b>${nGrupos}</b><br>Mesas totales: <b>${nMesas}</b><br>Comensales: <b>${nComensales}</b><br>`;
+  if (enConflicto.size > 0)
+    html += `<span class="conflicto">⚠ ${enConflicto.size} grupo(s) con sillas pegadas</span><br>`;
+  else if (nGrupos > 0)
+    html += `<span class="ok">✓ Sin conflictos entre grupos</span><br>`;
+  if (fuera.size > 0)
+    html += `<span class="conflicto">⚠ ${fuera.size} grupo(s) fuera de la pista</span>`;
+  stats.innerHTML = html;
+  document.getElementById("orientacion").textContent =
+    "Orientación nuevas: " + (rotNueva === 0 ? "horizontal ⬌" : "vertical ⬍");
+}
+
+// ---------- Interacción ----------
+function grupoEn(pos) {
+  for (let i = grupos.length - 1; i >= 0; i--) {
+    const g = grupos[i];
+    const r = rectGrupo(g);
+    if (pos.x >= r.x && pos.x <= r.x + r.w && pos.y >= r.y && pos.y <= r.y + r.h) return g;
+  }
+  return null;
+}
+
+function anadirMesa(x, y, rot = rotNueva) {
+  const g = { id: siguienteId++, x, y, rot, cols: 1, rows: 1 };
+  const p = snapMagnetico(g, x, y, TOL_ASENTAR);
+  g.x = p.x; g.y = p.y;
+  grupos.push(g);
+  seleccionada = g;
+  intentarFusiones();
+  dibujar();
+  return g;
+}
+
+canvas.addEventListener("mousedown", e => {
+  if (e.button !== 0) return;
+  const pos = pxToM(e);
+  const g = grupoEn(pos);
+  if (g) {
+    seleccionada = g;
+    arrastrando = { grupo: g, dx: pos.x - g.x, dy: pos.y - g.y };
+  } else {
+    seleccionada = null;
+    if (pos.x >= 0 && pos.y >= 0 && pos.x <= PISTA_W && pos.y <= PISTA_H) {
+      pintando = { ultima: pos, añadida: false };
+    }
+  }
+  dibujar();
+});
+
+canvas.addEventListener("mousemove", e => {
+  const pos = pxToM(e);
+  if (arrastrando) {
+    const g = arrastrando.grupo;
+    const p = snapMagnetico(g, pos.x - arrastrando.dx, pos.y - arrastrando.dy);
+    g.x = p.x; g.y = p.y;
+    dibujar();
+  } else if (pintando) {
+    // Pintar fila: añadir mesa cada largo de mesa recorrido.
+    // La orientación sigue la dirección del trazo: vertical → mesas en
+    // vertical, horizontal → en horizontal. Así se forman L y U al girar.
+    const dx = pos.x - pintando.ultima.x;
+    const dy = pos.y - pintando.ultima.y;
+    if (Math.hypot(dx, dy) >= MESA_L * 0.9) {
+      const rot = Math.abs(dy) > Math.abs(dx) ? 90 : 0;
+      const g = anadirMesa(pos.x, pos.y, rot);
+      // Seguir el trazo desde el centro real de la mesa colocada
+      pintando.ultima = { x: g.x, y: g.y };
+      pintando.añadida = true;
+    }
+  }
+  canvas.style.cursor = grupoEn(pos) ? "move" : "crosshair";
+});
+
+window.addEventListener("mouseup", () => {
+  if (pintando && !pintando.añadida) {
+    anadirMesa(pintando.ultima.x, pintando.ultima.y);
+  }
+  if (arrastrando) {
+    // Al soltar, asentar la mesa: se "cuadra" sola contra sus vecinas
+    const g = arrastrando.grupo;
+    const p = snapMagnetico(g, g.x, g.y, TOL_ASENTAR);
+    g.x = p.x; g.y = p.y;
+    intentarFusiones();
+    dibujar();
+  }
+  arrastrando = null;
+  pintando = null;
+});
+
+function rotar() {
+  if (seleccionada) {
+    seleccionada.rot = seleccionada.rot === 0 ? 90 : 0;
+    intentarFusiones();
+  } else {
+    rotNueva = rotNueva === 0 ? 90 : 0;
+  }
+  dibujar();
+}
+
+function borrarSeleccionada() {
+  if (!seleccionada) return;
+  grupos = grupos.filter(g => g !== seleccionada);
+  seleccionada = null;
+  dibujar();
+}
+
+window.addEventListener("keydown", e => {
+  if (e.key === "r" || e.key === "R") rotar();
+  if (e.key === "Delete" || e.key === "Backspace") borrarSeleccionada();
+});
+
+// ---------- Panel ----------
+document.getElementById("btn-add").addEventListener("click", () => anadirMesa(PISTA_W / 2, PISTA_H / 2));
+document.getElementById("btn-rotar").addEventListener("click", rotar);
+document.getElementById("btn-borrar").addEventListener("click", borrarSeleccionada);
+
+document.getElementById("margen").addEventListener("input", e => {
+  margenSillas = parseFloat(e.target.value);
+  document.getElementById("margen-val").textContent = margenSillas.toFixed(2) + " m";
+  dibujar();
+});
+
+document.getElementById("snap").addEventListener("change", e => { snap = e.target.checked; });
+
+// ---------- Persistencia ----------
+function estadoJSON() {
+  return JSON.stringify({ version: 2, grupos, margenSillas, siguienteId, rotNueva }, null, 2);
+}
+function cargarEstado(data) {
+  if (data.grupos) {
+    grupos = data.grupos;
+  } else if (data.mesas) {
+    // Formato antiguo: mesas individuales → grupos de 1×1
+    grupos = data.mesas.map(m => ({ id: m.id, x: m.x, y: m.y, rot: m.rot, cols: 1, rows: 1 }));
+  } else {
+    grupos = [];
+  }
+  margenSillas = data.margenSillas ?? 0.75;
+  rotNueva = data.rotNueva ?? 0;
+  siguienteId = data.siguienteId ?? (grupos.reduce((mx, g) => Math.max(mx, g.id), 0) + 1);
+  seleccionada = null;
+  document.getElementById("margen").value = margenSillas;
+  document.getElementById("margen-val").textContent = margenSillas.toFixed(2) + " m";
+  intentarFusiones();
+  dibujar();
+}
+
+document.getElementById("btn-guardar").addEventListener("click", () => {
+  localStorage.setItem("fiestas_mesas", estadoJSON());
+  alert("Distribución guardada en el navegador.");
+});
+document.getElementById("btn-cargar").addEventListener("click", () => {
+  const raw = localStorage.getItem("fiestas_mesas");
+  if (!raw) { alert("No hay nada guardado."); return; }
+  cargarEstado(JSON.parse(raw));
+});
+document.getElementById("btn-exportar").addEventListener("click", () => {
+  const blob = new Blob([estadoJSON()], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "distribucion_mesas.json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+document.getElementById("btn-importar").addEventListener("click", () => document.getElementById("fichero").click());
+document.getElementById("fichero").addEventListener("change", e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = () => cargarEstado(JSON.parse(reader.result));
+  reader.readAsText(f);
+  e.target.value = "";
+});
+
+// ---------- Inicio ----------
+dibujar();
+</script>
+</body>
+</html>
