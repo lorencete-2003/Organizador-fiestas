@@ -169,11 +169,12 @@ const PASO_SNAP = 0.05;   // paso de la cuadrícula de movimiento (m)
 const COURT_L = 23.77, COURT_W = 10.97, SINGLES_W = 8.23, SERVICIO = 6.40;
 const RED_X = PISTA_W / 2;
 const COURT_Y0 = (PISTA_H - COURT_W) / 2;
+const POSTE_SEPARACION_EXTERIOR = 1;
 const POSTE_BLOQUEO = 0.5;
 const POSTE_RADIO = 0.12;
 const POSTES_RED = [
-  { id: "poste_red_superior", nombre: "Poste de red (superior)", x: RED_X, y: COURT_Y0 },
-  { id: "poste_red_inferior", nombre: "Poste de red (inferior)", x: RED_X, y: COURT_Y0 + COURT_W }
+  { id: "poste_red_superior", nombre: "Poste de red (superior)", x: RED_X, y: COURT_Y0 - POSTE_SEPARACION_EXTERIOR },
+  { id: "poste_red_inferior", nombre: "Poste de red (inferior)", x: RED_X, y: COURT_Y0 + COURT_W + POSTE_SEPARACION_EXTERIOR }
 ];
 
 // Zonas reservadas / de aviso (rayadas en rojo)
