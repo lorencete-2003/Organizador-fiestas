@@ -136,9 +136,9 @@
     · Alt al arrastrar: sin cuadrícula ni imán<br>
     · Mesas pegadas se <b>fusionan</b> en una sola (imán al acercarlas)<br>
     · R: rotar seleccionada (o la orientación de las nuevas)<br>
-    · Supr: eliminar seleccionada<br>
-    · Halo rojo = sillas demasiado pegadas<br>
-    · Halo naranja = fuera de la pista
+    · Halo rojo = sillas demasiado pegadas o invasión de zona reservada<br>
+    · Halo naranja = fuera de la pista<br>
+    · Zona roja rayada = zonas reservadas / aviso
   </div>
 </div>
 
@@ -167,6 +167,14 @@ const PASO_SNAP = 0.05;   // paso de la cuadrícula de movimiento (m)
 
 // Medidas pista de tenis (dobles)
 const COURT_L = 23.77, COURT_W = 10.97, SINGLES_W = 8.23, SERVICIO = 6.40;
+
+// Zonas reservadas / de aviso (rayadas en rojo)
+const ZONAS_RESERVADAS = [
+  // Esquina abajo derecha: 4x4 (al final del todo, x: 29.2 a 33.2, y: 12 a 16)
+  { id: "esquina_abajo_der", nombre: "Zona reservada (4×4)", x: PISTA_W - 4, y: PISTA_H - 4, w: 4, h: 4 },
+  // Metro 6 al 9, altura 2 m en la parte inferior (x: 6 a 9, y: 14 a 16)
+  { id: "paso_abajo_6_9", nombre: "Zona reservada (6-9 m)", x: 6, y: PISTA_H - 2, w: 3, h: 2 }
+];
 
 // ---------- Estado ----------
 // Cada grupo es un rectángulo de mesas fusionadas: cols × rows mesas.
@@ -228,6 +236,7 @@ function solapan(a, b) {
 function calcularConflictos() {
   const enConflicto = new Set();
   const fuera = new Set();
+  const enReservada = new Set();
   const halos = grupos.map(g => ({ id: g.id, h: haloGrupo(g) }));
   for (let i = 0; i < halos.length; i++) {
     const a = halos[i].h;
@@ -235,8 +244,14 @@ function calcularConflictos() {
     for (let j = i + 1; j < halos.length; j++) {
       if (solapan(a, halos[j].h)) { enConflicto.add(halos[i].id); enConflicto.add(halos[j].id); }
     }
+    for (const z of ZONAS_RESERVADAS) {
+      if (solapan(a, z)) {
+        enConflicto.add(halos[i].id);
+        enReservada.add(halos[i].id);
+      }
+    }
   }
-  return { enConflicto, fuera };
+  return { enConflicto, fuera, enReservada };
 }
 
 // ---------- Fusión ----------
@@ -411,12 +426,59 @@ function dibujarPista() {
   ctx.restore();
 }
 
+// ---------- Zonas reservadas ----------
+function dibujarZonasReservadas() {
+  for (const z of ZONAS_RESERVADAS) {
+    const zx = mToPxX(z.x);
+    const zy = mToPxY(z.y);
+    const zw = z.w * ESCALA;
+    const zh = z.h * ESCALA;
+
+    // Fondo rojo transparente
+    ctx.fillStyle = "rgba(220, 38, 38, 0.22)";
+    ctx.fillRect(zx, zy, zw, zh);
+
+    // Rayado diagonal rojo
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(zx, zy, zw, zh);
+    ctx.clip();
+    ctx.strokeStyle = "rgba(220, 38, 38, 0.65)";
+    ctx.lineWidth = 2;
+    const paso = 10;
+    for (let d = -zh; d <= zw + zh; d += paso) {
+      ctx.beginPath();
+      ctx.moveTo(zx + d, zy);
+      ctx.lineTo(zx + d + zh, zy + zh);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // Borde rojo
+    ctx.strokeStyle = "#dc2626";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(zx, zy, zw, zh);
+
+    // Texto de aviso
+    ctx.save();
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 10px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.shadowColor = "rgba(0,0,0,0.9)";
+    ctx.shadowBlur = 4;
+    ctx.fillText("ZONA RESERVADA", zx + zw / 2, zy + zh / 2, zw - 6);
+    ctx.restore();
+  }
+}
+
 // ---------- Dibujo ----------
 function dibujar() {
   ctx.clearRect(0, 0, W, H);
   dibujarPista();
+  dibujarZonasReservadas();
 
-  const { enConflicto, fuera } = calcularConflictos();
+  const { enConflicto, fuera, enReservada } = calcularConflictos();
 
   for (const g of grupos) {
     const r = rectGrupo(g);
@@ -503,7 +565,7 @@ function dibujar() {
     ctx.restore();
   }
 
-  actualizarStats(enConflicto, fuera);
+  actualizarStats(enConflicto, fuera, enReservada);
   sincronizarPanelSeleccion();
 }
 
@@ -524,16 +586,23 @@ function comensalesGrupo(g) {
   return 6 * g.cols;
 }
 
-function actualizarStats(enConflicto, fuera) {
+function actualizarStats(enConflicto, fuera, enReservada = new Set()) {
   const stats = document.getElementById("stats");
   const nGrupos = grupos.length;
   const nMesas = grupos.reduce((s, g) => s + g.cols * g.rows, 0);
   const nComensales = grupos.reduce((s, g) => s + comensalesGrupo(g), 0);
   let html = `Grupos: <b>${nGrupos}</b><br>Mesas totales: <b>${nMesas}</b><br>Comensales: <b>${nComensales}</b><br>`;
-  if (enConflicto.size > 0)
-    html += `<span class="conflicto">⚠ ${enConflicto.size} grupo(s) con sillas pegadas</span><br>`;
-  else if (nGrupos > 0)
+  if (enConflicto.size > 0) {
+    if (enReservada.size > 0) {
+      html += `<span class="conflicto">⚠ ${enReservada.size} grupo(s) invaden zona reservada</span><br>`;
+    }
+    const soloSillas = [...enConflicto].filter(id => !enReservada.has(id)).length;
+    if (soloSillas > 0) {
+      html += `<span class="conflicto">⚠ ${soloSillas} grupo(s) con sillas pegadas</span><br>`;
+    }
+  } else if (nGrupos > 0) {
     html += `<span class="ok">✓ Sin conflictos entre grupos</span><br>`;
+  }
   if (fuera.size > 0)
     html += `<span class="conflicto">⚠ ${fuera.size} grupo(s) fuera de la pista</span>`;
   stats.innerHTML = html;
@@ -740,10 +809,12 @@ document.getElementById("btn-imprimir").addEventListener("click", () => {
 
   const nMesas = grupos.reduce((s, g) => s + g.cols * g.rows, 0);
   const nComensales = grupos.reduce((s, g) => s + comensalesGrupo(g), 0);
-  const { enConflicto, fuera } = calcularConflictos();
+  const { enConflicto, fuera, enReservada } = calcularConflictos();
   let resumen = `Grupos: ${grupos.length} · Mesas: ${nMesas} · Comensales: ${nComensales}` +
     ` · Margen de sillas: ${margenSillas.toFixed(2)} m`;
-  if (enConflicto.size > 0) resumen += ` · ⚠ ${enConflicto.size} grupo(s) con sillas pegadas`;
+  if (enReservada && enReservada.size > 0) resumen += ` · ⚠ ${enReservada.size} grupo(s) en zona reservada`;
+  const soloSillas = [...enConflicto].filter(id => !enReservada || !enReservada.has(id)).length;
+  if (soloSillas > 0) resumen += ` · ⚠ ${soloSillas} grupo(s) con sillas pegadas`;
   if (fuera.size > 0) resumen += ` · ⚠ ${fuera.size} grupo(s) fuera de la pista`;
   document.getElementById("imprimir-resumen").textContent = resumen;
 
