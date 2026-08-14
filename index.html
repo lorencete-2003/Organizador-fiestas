@@ -58,6 +58,29 @@
   #panel input[type="checkbox"] { vertical-align: middle; }
   #panel label.inline { display: inline; margin-left: 4px; font-size: 12px; }
   #orientacion { font-size: 12px; color: #8cf; margin-top: 4px; }
+  #nombre-mesa {
+    width: 100%;
+    padding: 6px;
+    margin-top: 4px;
+    background: #2b2b2b;
+    color: #eee;
+    border: 1px solid #555;
+    border-radius: 4px;
+    font-size: 13px;
+  }
+  #seccion-seleccion { display: none; }
+  /* ---- Impresión: solo el plano ---- */
+  #vista-imprimir { display: none; }
+  @media print {
+    @page { size: landscape; margin: 1cm; }
+    body { display: block; background: #fff; height: auto; overflow: visible; }
+    #canvas-wrap, #panel { display: none !important; }
+    #vista-imprimir { display: block; color: #000; font-family: Arial, sans-serif; }
+    #vista-imprimir h1 { font-size: 20px; margin-bottom: 4px; }
+    #vista-imprimir .resumen { font-size: 13px; margin-bottom: 8px; }
+    #vista-imprimir img { max-width: 100%; border: 1px solid #999; }
+    #vista-imprimir .listado { font-size: 12px; margin-top: 8px; column-count: 3; }
+  }
 </style>
 </head>
 <body>
@@ -76,12 +99,18 @@
   <button id="btn-borrar" class="peligro">Eliminar (Supr)</button>
   <div id="orientacion"></div>
 
+  <div id="seccion-seleccion">
+    <h2>Mesa seleccionada</h2>
+    <label for="nombre-mesa">Nombre:</label>
+    <input type="text" id="nombre-mesa" maxlength="40">
+  </div>
+
   <h2>Zona de sillas</h2>
   <label>Margen alrededor: <span class="valor" id="margen-val">0.75 m</span></label>
   <input type="range" id="margen" min="0.4" max="1.2" step="0.05" value="0.75">
 
   <h2>Cuadrícula</h2>
-  <input type="checkbox" id="snap" checked><label class="inline" for="snap">Ajustar a cuadrícula (0.1 m)</label>
+  <input type="checkbox" id="snap" checked><label class="inline" for="snap">Ajustar a cuadrícula (0.05 m)</label>
 
   <h2>Estado</h2>
   <div id="stats"></div>
@@ -93,6 +122,9 @@
   <button id="btn-importar" class="secundario">Importar JSON</button>
   <input type="file" id="fichero" accept=".json" style="display:none">
 
+  <h2>Imprimir</h2>
+  <button id="btn-imprimir">🖨 Imprimir plano</button>
+
   <div class="ayuda">
     <b>Controles:</b><br>
     · Clic en hueco vacío: añadir mesa<br>
@@ -100,12 +132,22 @@
     &nbsp;&nbsp;la orientación sigue la dirección del trazo<br>
     &nbsp;&nbsp;(gira y formarás L y U automáticamente)<br>
     · Arrastrar una mesa: moverla<br>
+    · Flechas: mover 5 cm (Shift: 1 cm)<br>
+    · Alt al arrastrar: sin cuadrícula ni imán<br>
     · Mesas pegadas se <b>fusionan</b> en una sola (imán al acercarlas)<br>
     · R: rotar seleccionada (o la orientación de las nuevas)<br>
     · Supr: eliminar seleccionada<br>
     · Halo rojo = sillas demasiado pegadas<br>
     · Halo naranja = fuera de la pista
   </div>
+</div>
+
+<!-- Vista exclusiva para impresión -->
+<div id="vista-imprimir">
+  <h1>Distribución de mesas — Pista 33.2 × 16 m</h1>
+  <div class="resumen" id="imprimir-resumen"></div>
+  <img id="imprimir-img" alt="Plano de la pista">
+  <div class="listado" id="imprimir-listado"></div>
 </div>
 
 <script>
@@ -121,6 +163,7 @@ const MARGEN_LIENZO = 40;
 const TOL_FUSION = 0.12;  // hueco máximo (m) para considerar mesas "pegadas"
 const TOL_IMAN = 0.35;    // distancia de atracción del imán (m) en vivo
 const TOL_ASENTAR = 0.5;  // atracción (m) al soltar/añadir, para "cuadrar" sola
+const PASO_SNAP = 0.05;   // paso de la cuadrícula de movimiento (m)
 
 // Medidas pista de tenis (dobles)
 const COURT_L = 23.77, COURT_W = 10.97, SINGLES_W = 8.23, SERVICIO = 6.40;
@@ -232,6 +275,8 @@ function intentarFusiones() {
         const nY = Math.max(1, Math.round(uh / celY));
         const nuevo = {
           id: a.id,
+          // Conserva el nombre del grupo más grande (por si el usuario lo renombró)
+          nombre: (a.cols * a.rows >= b.cols * b.rows ? a : b).nombre,
           x: ux + uw / 2,
           y: uy + uh / 2,
           rot: a.rot,
@@ -253,10 +298,12 @@ function intentarFusiones() {
 // ---------- Imán (snap a bordes de otros grupos) ----------
 // tol: distancia máxima de atracción. En vivo se usa TOL_IMAN y al soltar
 // una tolerancia mayor (TOL_ASENTAR) para que la mesa "se cuadre" sola.
-function snapMagnetico(g, x, y, tol = TOL_IMAN) {
+// libre: sin cuadrícula ni imán (ajuste fino con Alt).
+function snapMagnetico(g, x, y, tol = TOL_IMAN, libre = false) {
+  if (libre) return { x, y };
   const d = dimsGrupo(g);
-  let bx = snap ? Math.round(x * 10) / 10 : x;
-  let by = snap ? Math.round(y * 10) / 10 : y;
+  let bx = snap ? Math.round(x * 20) / 20 : x;
+  let by = snap ? Math.round(y * 20) / 20 : y;
   let mejorX = null, mejorY = null;
   let dxMin = tol, dyMin = tol;
   for (const o of grupos) {
@@ -442,11 +489,24 @@ function dibujar() {
     ctx.fillStyle = "#fff";
     ctx.font = "bold 11px sans-serif";
     ctx.textAlign = "center";
-    const txt = nMesas > 1 ? `${g.id} (${nMesas})` : `${g.id}`;
+    const txt = nMesas > 1 ? `${g.nombre} (${nMesas})` : `${g.nombre}`;
     ctx.fillText(txt, mToPxX(g.x), mToPxY(g.y) + 4);
   }
 
   actualizarStats(enConflicto, fuera);
+  sincronizarPanelSeleccion();
+}
+
+// Muestra/oculta y rellena el editor de nombre de la mesa seleccionada
+function sincronizarPanelSeleccion() {
+  const sec = document.getElementById("seccion-seleccion");
+  const input = document.getElementById("nombre-mesa");
+  if (seleccionada) {
+    sec.style.display = "block";
+    if (document.activeElement !== input) input.value = seleccionada.nombre;
+  } else {
+    sec.style.display = "none";
+  }
 }
 
 function comensalesGrupo(g) {
@@ -482,7 +542,8 @@ function grupoEn(pos) {
 }
 
 function anadirMesa(x, y, rot = rotNueva) {
-  const g = { id: siguienteId++, x, y, rot, cols: 1, rows: 1 };
+  const g = { id: siguienteId, nombre: "Mesa " + siguienteId, x, y, rot, cols: 1, rows: 1 };
+  siguienteId++;
   const p = snapMagnetico(g, x, y, TOL_ASENTAR);
   g.x = p.x; g.y = p.y;
   grupos.push(g);
@@ -512,7 +573,7 @@ canvas.addEventListener("mousemove", e => {
   const pos = pxToM(e);
   if (arrastrando) {
     const g = arrastrando.grupo;
-    const p = snapMagnetico(g, pos.x - arrastrando.dx, pos.y - arrastrando.dy);
+    const p = snapMagnetico(g, pos.x - arrastrando.dx, pos.y - arrastrando.dy, TOL_IMAN, e.altKey);
     g.x = p.x; g.y = p.y;
     dibujar();
   } else if (pintando) {
@@ -532,16 +593,19 @@ canvas.addEventListener("mousemove", e => {
   canvas.style.cursor = grupoEn(pos) ? "move" : "crosshair";
 });
 
-window.addEventListener("mouseup", () => {
+window.addEventListener("mouseup", e => {
   if (pintando && !pintando.añadida) {
     anadirMesa(pintando.ultima.x, pintando.ultima.y);
   }
   if (arrastrando) {
-    // Al soltar, asentar la mesa: se "cuadra" sola contra sus vecinas
+    // Al soltar, asentar la mesa: se "cuadra" sola contra sus vecinas.
+    // Con Alt se respeta la posición exacta (ajuste fino).
     const g = arrastrando.grupo;
-    const p = snapMagnetico(g, g.x, g.y, TOL_ASENTAR);
-    g.x = p.x; g.y = p.y;
-    intentarFusiones();
+    if (!e.altKey) {
+      const p = snapMagnetico(g, g.x, g.y, TOL_ASENTAR);
+      g.x = p.x; g.y = p.y;
+      intentarFusiones();
+    }
     dibujar();
   }
   arrastrando = null;
@@ -566,8 +630,21 @@ function borrarSeleccionada() {
 }
 
 window.addEventListener("keydown", e => {
+  // No capturar teclas mientras se edita el nombre de una mesa
+  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
   if (e.key === "r" || e.key === "R") rotar();
   if (e.key === "Delete" || e.key === "Backspace") borrarSeleccionada();
+  // Ajuste fino con flechas: 5 cm (1 cm con Shift)
+  if (seleccionada && e.key.startsWith("Arrow")) {
+    e.preventDefault();
+    const paso = e.shiftKey ? 0.01 : PASO_SNAP;
+    if (e.key === "ArrowLeft")  seleccionada.x = Math.round((seleccionada.x - paso) * 100) / 100;
+    if (e.key === "ArrowRight") seleccionada.x = Math.round((seleccionada.x + paso) * 100) / 100;
+    if (e.key === "ArrowUp")    seleccionada.y = Math.round((seleccionada.y - paso) * 100) / 100;
+    if (e.key === "ArrowDown")  seleccionada.y = Math.round((seleccionada.y + paso) * 100) / 100;
+    intentarFusiones();
+    dibujar();
+  }
 });
 
 // ---------- Panel ----------
@@ -583,6 +660,12 @@ document.getElementById("margen").addEventListener("input", e => {
 
 document.getElementById("snap").addEventListener("change", e => { snap = e.target.checked; });
 
+document.getElementById("nombre-mesa").addEventListener("input", e => {
+  if (!seleccionada) return;
+  seleccionada.nombre = e.target.value.trim() || "Mesa " + seleccionada.id;
+  dibujar();
+});
+
 // ---------- Persistencia ----------
 function estadoJSON() {
   return JSON.stringify({ version: 2, grupos, margenSillas, siguienteId, rotNueva }, null, 2);
@@ -596,6 +679,8 @@ function cargarEstado(data) {
   } else {
     grupos = [];
   }
+  // Guardados sin nombre: asignar el por defecto
+  for (const g of grupos) if (!g.nombre) g.nombre = "Mesa " + g.id;
   margenSillas = data.margenSillas ?? 0.75;
   rotNueva = data.rotNueva ?? 0;
   siguienteId = data.siguienteId ?? (grupos.reduce((mx, g) => Math.max(mx, g.id), 0) + 1);
@@ -631,6 +716,35 @@ document.getElementById("fichero").addEventListener("change", e => {
   reader.onload = () => cargarEstado(JSON.parse(reader.result));
   reader.readAsText(f);
   e.target.value = "";
+});
+
+// ---------- Impresión ----------
+document.getElementById("btn-imprimir").addEventListener("click", () => {
+  // Asegurar el plano al día (sin selección resaltada en la impresión)
+  const sel = seleccionada;
+  seleccionada = null;
+  dibujar();
+  document.getElementById("imprimir-img").src = canvas.toDataURL("image/png");
+  seleccionada = sel;
+  dibujar();
+
+  const nMesas = grupos.reduce((s, g) => s + g.cols * g.rows, 0);
+  const nComensales = grupos.reduce((s, g) => s + comensalesGrupo(g), 0);
+  const { enConflicto, fuera } = calcularConflictos();
+  let resumen = `Grupos: ${grupos.length} · Mesas: ${nMesas} · Comensales: ${nComensales}` +
+    ` · Margen de sillas: ${margenSillas.toFixed(2)} m`;
+  if (enConflicto.size > 0) resumen += ` · ⚠ ${enConflicto.size} grupo(s) con sillas pegadas`;
+  if (fuera.size > 0) resumen += ` · ⚠ ${fuera.size} grupo(s) fuera de la pista`;
+  document.getElementById("imprimir-resumen").textContent = resumen;
+
+  const listado = grupos
+    .slice()
+    .sort((a, b) => a.nombre.localeCompare(b.nombre, "es", { numeric: true }))
+    .map(g => `${g.nombre}: ${g.cols * g.rows} mesa(s), ${comensalesGrupo(g)} comensales`)
+    .join("<br>");
+  document.getElementById("imprimir-listado").innerHTML = listado;
+
+  window.print();
 });
 
 // ---------- Inicio ----------
